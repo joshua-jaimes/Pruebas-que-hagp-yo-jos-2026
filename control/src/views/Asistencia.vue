@@ -1,32 +1,15 @@
-<template>
-  <div class="asistencia">
-    <h2>📘 Asistencia Automática</h2>
-
-    <video ref="video" autoplay playsinline class="video"></video>
-    <canvas ref="canvas" width="300" height="225" style="display:none;"></canvas>
-
-    <p class="estado">{{ estado }}</p>
-
-    <div v-if="personaDetectada">
-      <h3>✔ {{ personaDetectada.nombre }}</h3>
-      <img :src="personaDetectada.foto" width="120" />
-      <p>ASISTENCIA REGISTRADA</p>
-    </div>
-  </div>
-</template>
-
 <script setup>
 import { ref, onMounted } from "vue";
-
 const faceapi = window.faceapi;
 
 const video = ref(null);
 const canvas = ref(null);
 const estado = ref("Cargando...");
 const personaDetectada = ref(null);
+let reconocimientoActivo = true;
 
 async function cargarModelos() {
-  await faceapi.nets.tinyFaceDetector.loadFromUri("/models");
+  await faceapi.nets.ssdMobilenetv1.loadFromUri("/models");
   await faceapi.nets.faceLandmark68Net.loadFromUri("/models");
   await faceapi.nets.faceRecognitionNet.loadFromUri("/models");
 }
@@ -36,8 +19,12 @@ async function iniciarCamara() {
   video.value.srcObject = stream;
 }
 
-async function reconocer() {
+async function iniciarReconocimiento() {
   const personas = JSON.parse(localStorage.getItem("personas") || "[]");
+  if (personas.length === 0) {
+    estado.value = "No hay personas registradas";
+    return;
+  }
 
   const labeled = personas.map(p =>
     new faceapi.LabeledFaceDescriptors(
@@ -46,53 +33,53 @@ async function reconocer() {
     )
   );
 
-  const matcher = new faceapi.FaceMatcher(labeled);
+  const matcher = new faceapi.FaceMatcher(labeled, 0.5);
 
   setInterval(async () => {
+    if (!reconocimientoActivo) return;
+
     const deteccion = await faceapi
-      .detectSingleFace(video.value, new faceapi.TinyFaceDetectorOptions())
+      .detectSingleFace(video.value)
       .withFaceLandmarks()
       .withFaceDescriptor();
 
-    if (!deteccion) return;
+    if (!deteccion) {
+      estado.value = "Buscando rostro...";
+      return;
+    }
 
     const match = matcher.findBestMatch(deteccion.descriptor);
-    if (match.label === "unknown") return;
+    if (match.label === "unknown") {
+      estado.value = "Persona desconocida";
+      return;
+    }
+
+    reconocimientoActivo = false;
 
     const persona = personas.find(p => p.nombre === match.label);
-
     const ctx = canvas.value.getContext("2d");
     ctx.drawImage(video.value, 0, 0, 300, 225);
-    const fotoAsistencia = canvas.value.toDataURL("image/png");
+    const foto = canvas.value.toDataURL("image/png");
 
-    personaDetectada.value = { ...persona, foto: fotoAsistencia };
+    personaDetectada.value = persona;
+    estado.value = `✔ Bienvenido ${persona.nombre}`;
 
     const asistencias = JSON.parse(localStorage.getItem("asistencias") || "[]");
-    const hoy = new Date().toLocaleDateString();
+    asistencias.push({
+      nombre: persona.nombre,
+      id: persona.id,
+      fecha: new Date().toLocaleDateString(),
+      hora: new Date().toLocaleTimeString(),
+      foto,
+    });
 
-    if (!asistencias.some(a => a.id === persona.id && a.fecha === hoy)) {
-      asistencias.push({
-        nombre: persona.nombre,
-        id: persona.id,
-        fecha: hoy,
-        hora: new Date().toLocaleTimeString(),
-        foto: fotoAsistencia,
-      });
-      localStorage.setItem("asistencias", JSON.stringify(asistencias));
-    }
-  }, 1000);
+    localStorage.setItem("asistencias", JSON.stringify(asistencias));
+  }, 800);
 }
 
 onMounted(async () => {
   await cargarModelos();
   await iniciarCamara();
-  reconocer();
+  iniciarReconocimiento();
 });
 </script>
-
-<style>
-.video {
-  width: 300px;
-  border: 2px solid #4b9be0;
-}
-</style>
